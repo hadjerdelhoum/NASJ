@@ -14,11 +14,9 @@ import type {
 const BASE = `${(import.meta.env.VITE_API_URL as string | undefined) ?? ""}/api`;
 const TOKEN_KEY = "nasj.token";
 
-export class ApiError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-  }
-}
+export { ApiError } from "./errors";
+import { ApiError } from "./errors";
+import { makeLocalApi } from "./localApi";
 
 export const tokenStore = {
   get: () => {
@@ -63,6 +61,8 @@ async function request<T>(path: string, opts: { method?: string; body?: unknown 
   }
   if (res.ok && (typeof data !== "object" || data === null)) throw new ApiError(0, "network");
   if (!res.ok) {
+    // A static host answers 404/405 to API calls: that is "no server here", not a real API error.
+    if (res.status === 404 || res.status === 405) throw new ApiError(0, "network");
     if (res.status === 401 && token) window.dispatchEvent(new Event("nasj:unauthorized"));
     throw new ApiError(res.status, (data as { error?: string }).error ?? "error");
   }
@@ -76,7 +76,16 @@ async function tokenOnly(p: Promise<{ token: string }>) {
   return r;
 }
 
-export const api = {
+/**
+ * Offline mode: the Android app built without VITE_API_URL keeps everything on the device.
+ * Set VITE_LOCAL=1 to force it in a browser, VITE_LOCAL=0 to force the server.
+ */
+const forced = import.meta.env.VITE_LOCAL as string | undefined;
+// Any published build (APK or website) without an API address keeps everything on the device.
+// Only `vite dev` (which proxies to the local backend) or a build with VITE_API_URL talks to a server.
+export const OFFLINE = forced === "1" || (forced !== "0" && !import.meta.env.DEV && !import.meta.env.VITE_API_URL);
+
+const remoteApi = {
   health: () => request<{ ok: boolean; assistant: boolean }>("/health"),
   register: (email: string, password: string) => tokenOnly(request<{ token: string }>("/auth/register", { body: { email, password } })),
   login: (email: string, password: string) => tokenOnly(request<{ token: string }>("/auth/login", { body: { email, password } })),
@@ -95,3 +104,5 @@ export const api = {
 
   ask: (question: string) => request<{ answer: string }>("/assistant", { body: { question } }),
 };
+
+export const api: typeof remoteApi = OFFLINE ? makeLocalApi(() => tokenStore.get()) : remoteApi;
